@@ -3,9 +3,16 @@ seed=20260911
 grid=30x30
 generation_attempts=1
 reachable_free_cells=700
-steps=398
-energy_used=398
-remaining_energy=2
-final_coverage_pct=99.428571
+steps=380
+energy_used=380
+remaining_energy=20
+final_coverage_pct=98.000000
 returned_successfully=True
-ckek=0.004971
+movement_attempts=380
+obstacle_attempts=0
+coverage_energy_product=0.049000
+
+Local 20-seed check
+mean_coverage_pct=96.27
+return_success_fraction=1.000000
+mean_coverage_energy_product=0.048135
