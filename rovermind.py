@@ -2,7 +2,7 @@
 
 Pure software simulation. The simulator owns the hidden grid; the controller
 receives only its current position, remaining energy, revealed cells and the
-previous action.
+previous action. It never receives the hidden grid or unrevealed occupancy.
 """
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ INITIAL_ENERGY = 400
 REVEAL_RADIUS = 2
 SAFETY_RESERVE = 20
 
-# (dx, dy, action), deterministic tie order.
 DIRECTIONS = ((0, 1, "UP"), (1, 0, "RIGHT"), (0, -1, "DOWN"), (-1, 0, "LEFT"))
 Position = Tuple[int, int]
 
@@ -40,7 +39,7 @@ def neighbors(p: Position, size: int = N) -> Iterable[Tuple[Position, str]]:
 
 
 def reachable_cells(grid: np.ndarray) -> Set[Position]:
-    """True-world helper: used only by the simulator/evaluator."""
+    """True-world helper used only by the simulator/evaluator."""
     q: deque[Position] = deque([BASE])
     seen: Set[Position] = {BASE}
     while q:
@@ -76,13 +75,13 @@ def reveal(grid: np.ndarray, center: Position) -> Dict[Position, bool]:
     return result
 
 
-def bfs(start: Position, known_free: Set[Position]) -> Tuple[Dict[Position, Optional[Position]], Dict[Position, int]]:
-    """BFS over known-free cells only. This function is safe for the controller."""
+def bfs(start: Position, known_free: Set[Position]):
+    """BFS over known-free cells only. Safe for controller use."""
     if start not in known_free:
         return {}, {}
     q: deque[Position] = deque([start])
     parent: Dict[Position, Optional[Position]] = {start: None}
-    dist = {start: 0}
+    dist: Dict[Position, int] = {start: 0}
     while q:
         p = q.popleft()
         for nxt, _ in neighbors(p):
@@ -94,7 +93,6 @@ def bfs(start: Position, known_free: Set[Position]) -> Tuple[Dict[Position, Opti
 
 
 def first_step(parent: Dict[Position, Optional[Position]], start: Position, target: Position) -> Position:
-    """First move on a path represented by parent pointers rooted at start."""
     if target == start:
         return start
     if target not in parent:
@@ -123,7 +121,9 @@ class Decision:
 
 
 class RoverMindController:
-    """Greedy frontier controller using revealed information only."""
+    """Greedy frontier controller that is strictly online."""
+
+    ACTIONS = {name: (dx, dy) for dx, dy, name in DIRECTIONS}
 
     def __init__(self, safety_reserve: int = SAFETY_RESERVE):
         self.known: Dict[Position, bool] = {}
@@ -143,37 +143,35 @@ class RoverMindController:
         if self.energy <= 0:
             raise RuntimeError("Controller cannot act with zero energy.")
 
+        # ONLY explicitly revealed free cells are used for routing.
         known_free = {p for p, is_free in self.known.items() if is_free}
         known_free.add(BASE)
 
-        # The controller can only route through cells that it already knows are free.
         base_parent, base_dist = bfs(BASE, known_free)
         current_parent, current_dist = bfs(self.position, known_free)
         home = base_dist.get(self.position)
         if home is None:
             raise RuntimeError("Known-safe route to base disappeared.")
 
-        # Exact termination: success requires the explicit DONE action at base.
+        # Exact benchmark termination: BASE + explicit DONE.
         if self.position == BASE:
-            frontiers = self._frontiers(known_free, current_dist)
+            frontiers = self._frontiers(current_dist)
             if not frontiers or self.energy <= self.safety_reserve + 1:
                 return Decision("DONE", reason="At base; no safe useful exploration remains.")
             self.return_mode = False
 
-        # Safety trigger: when energy approaches the known home cost, return immediately.
+        # Turn back once the available energy is too close to the known home cost.
         if self.position != BASE and self.energy <= home + self.safety_reserve:
             self.return_mode = True
 
         if self.return_mode:
-            if self.position == BASE:
-                return Decision("DONE", reason="Returned to base safely.")
             target = base_parent.get(self.position)
             if target is None:
                 raise RuntimeError("Could not reconstruct return step.")
             return Decision("MOVE", target, f"TURN BACK: E={self.energy}, home={home}")
 
-        # Greedy exploration: nearest reachable frontier, then most unknown neighbors.
-        frontiers = self._frontiers(known_free, current_dist)
+        # Greedy online frontier selection.
+        frontiers = self._frontiers(current_dist)
         if frontiers:
             min_d = min(current_dist[p] for p in frontiers)
             nearest = [p for p in frontiers if current_dist[p] == min_d]
@@ -182,27 +180,31 @@ class RoverMindController:
             if target != self.position:
                 nxt = first_step(current_parent, self.position, target)
                 post_home = base_dist.get(nxt)
-                # Pay 1 for the proposed move and preserve the reserve afterward.
+                # Pay 1 now; preserve return distance plus the safety reserve.
                 if post_home is not None and self.energy - 1 >= post_home + self.safety_reserve:
                     return Decision("MOVE", nxt, f"GO FRONTIER: post_home={post_home}")
 
-        # No safe exploration step remains, so go home through known-free cells.
+            # If no safe forward step exists, return.
+            self.return_mode = True
+            target = base_parent.get(self.position)
+            if target is None:
+                raise RuntimeError("No known-safe return step.")
+            return Decision("MOVE", target, f"TURN BACK: frontier no longer safe, home={home}")
+
         if self.position == BASE:
             return Decision("DONE", reason="At base; finish safely.")
+
+        self.return_mode = True
         target = base_parent.get(self.position)
         if target is None:
             raise RuntimeError("No known-safe return step.")
-        self.return_mode = True
-        return Decision("MOVE", target, f"TURN BACK: home={home}, reserve={self.safety_reserve}")
+        return Decision("MOVE", target, f"RETURN: no frontier, home={home}")
 
     def _unknown_count(self, p: Position) -> int:
         return sum(1 for nxt, _ in neighbors(p) if nxt not in self.known)
 
-    def _frontiers(self, known_free: Set[Position], current_dist: Dict[Position, int]) -> List[Position]:
-        return [
-            p for p in current_dist
-            if p in known_free and self._unknown_count(p) > 0
-        ]
+    def _frontiers(self, current_dist: Dict[Position, int]) -> List[Position]:
+        return [p for p in current_dist if self._unknown_count(p) > 0]
 
 
 @dataclass
@@ -226,7 +228,7 @@ class RunResult:
 
 
 def run_simulation(seed: int = SEED, max_steps: int = 20_000) -> RunResult:
-    """Run one hidden-map simulation with exact IR-01 termination semantics."""
+    """Run one simulation with the exact termination rule."""
     grid, reachable, generation_attempts = build_grid(seed)
     position = BASE
     energy = INITIAL_ENERGY
@@ -247,6 +249,7 @@ def run_simulation(seed: int = SEED, max_steps: int = 20_000) -> RunResult:
         if energy == 0:
             break
 
+        # Online boundary: ONLY current reveal + state crosses into controller.
         decision = controller.decide(
             Observation(position, energy, current_reveal, previous_action)
         )
@@ -262,12 +265,13 @@ def run_simulation(seed: int = SEED, max_steps: int = 20_000) -> RunResult:
 
         if decision.action != "MOVE" or decision.target is None:
             raise RuntimeError(f"Invalid controller decision: {decision}")
-        if all(nxt != decision.target for nxt, _ in neighbors(position)):
-            raise RuntimeError(f"Illegal movement target: {decision.target}")
+
+        target = decision.target
+        if all(nxt != target for nxt, _ in neighbors(position)):
+            raise RuntimeError(f"Illegal movement target: {target}")
 
         movement_attempts += 1
         energy -= 1
-        target = decision.target
         if grid[target[1], target[0]]:
             position = target
             actions.append("MOVE")
@@ -307,27 +311,18 @@ def _result(
     cov = len(observed) / len(reachable) if reachable else 1.0
     ef = energy / INITIAL_ENERGY if success else 0.0
     return RunResult(
-        seed=seed,
-        success=success,
-        coverage=cov,
-        energy_remaining=energy,
-        steps=len(trajectory) - 1,
-        movement_attempts=movement_attempts,
-        obstacle_attempts=obstacle_attempts,
-        reachable_free_cells=len(reachable),
-        observed_reachable_cells=len(observed),
-        coverage_energy_product=cov * ef,
-        generation_attempts=generation_attempts,
-        trajectory=trajectory,
-        coverage_over_time=coverage_history,
-        energy_over_time=energy_history,
-        actions=actions,
-        reasons=reasons,
+        seed=seed, success=success, coverage=cov, energy_remaining=energy,
+        steps=len(trajectory) - 1, movement_attempts=movement_attempts,
+        obstacle_attempts=obstacle_attempts, reachable_free_cells=len(reachable),
+        observed_reachable_cells=len(observed), coverage_energy_product=cov * ef,
+        generation_attempts=generation_attempts, trajectory=trajectory,
+        coverage_over_time=coverage_history, energy_over_time=energy_history,
+        actions=actions, reasons=reasons,
     )
 
 
 def save_outputs(result: RunResult, out_dir: str = ".") -> None:
-    """Save development metrics, trajectory log and visualization."""
+    """Write development metrics, trajectory, and a PNG visualization."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -352,10 +347,8 @@ def save_outputs(result: RunResult, out_dir: str = ".") -> None:
         for i, p in enumerate(result.trajectory):
             action = "START" if i == 0 else result.actions[i - 1]
             reason = "Initial observation" if i == 0 else result.reasons[i - 1]
-            w.writerow([
-                i, p[0], p[1], result.energy_over_time[i],
-                f"{100 * result.coverage_over_time[i]:.6f}", action, reason,
-            ])
+            w.writerow([i, p[0], p[1], result.energy_over_time[i],
+                        f"{100 * result.coverage_over_time[i]:.6f}", action, reason])
 
     grid, _, _ = build_grid(result.seed)
     fig, ax = plt.subplots(figsize=(9, 9))
@@ -391,10 +384,8 @@ def print_result(r: RunResult) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--benchmark", type=int, default=0,
-        help="run N deterministic seeds starting from 20260911",
-    )
+    parser.add_argument("--benchmark", type=int, default=0,
+                        help="run N deterministic seeds starting from 20260911")
     args = parser.parse_args()
 
     result = run_simulation(SEED)
