@@ -1,0 +1,13 @@
+{
+  "seed": 20260911,
+  "success": true,
+  "coverage": 0.98,
+  "energy_remaining": 20,
+  "steps": 380,
+  "movement_attempts": 380,
+  "obstacle_attempts": 0,
+  "visited_free_cells": 686,
+  "reachable_free_cells": 700,
+  "coverage_energy_product": 0.049,
+  "generation_attempts": 1
+}
