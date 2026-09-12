@@ -1,0 +1,11 @@
+RoverMind — IR-01 development run
+seed=20260911
+grid=30x30
+generation_attempts=1
+reachable_free_cells=700
+steps=398
+energy_used=398
+remaining_energy=2
+final_coverage_pct=99.428571
+returned_successfully=True
+ckek=0.004971
