@@ -9,5 +9,6 @@
   "visited_free_cells": 686,
   "reachable_free_cells": 700,
   "coverage_energy_product": 0.049,
-  "generation_attempts": 1
+  "generation_attempts": 1,
+  "evaluation_note": "Development run only; organizer evaluation must use its own evaluation seeds and interface."
 }
