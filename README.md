@@ -1,79 +1,42 @@
-# IR-01: Energy-Aware Grid Exploration
+# RoverMind — IR-01 Energy-Aware Robot Grid Exploration
 
-This repository contains a pure software simulation for the IR-01 problem.
+RoverMind is a pure Python simulation for IR-01.
 
-## Run it
+## Run
 
 ```bash
-pip install numpy matplotlib
-python scout_grid.py
+pip install -r requirements.txt
+python rovermind.py
 ```
 
-## What the program does
+The program creates the required 30x30 map, reveals only the allowed local view, runs an online greedy explorer, prints metrics, writes step-by-step logs, and saves a plot.
 
-`scout_grid.py` creates a deterministic 30x30 grid with NumPy PCG64 and seed `20260911`. Every non-base cell is independently made an obstacle with probability `0.20`. The grid is regenerated until at least 70% of all free cells are reachable from base `(0, 0)` using 4-directional movement.
+## Approach
 
-The controller is genuinely online. It receives only the revealed map, its current position, previous action history, and remaining energy. It never receives the hidden grid, the total reachable-cell count, or the status of an unrevealed cell.
+The explorer looks for the nearest **frontier**: a cell already known to be free that touches at least one unknown cell. It walks to a nearby frontier through known-free cells and then tests one unknown neighbor. When several frontiers are equally close, it prefers the one with more unknown neighbors because that usually gives more new information.
 
-At every position, the simulator reveals the true occupancy of every cell within Manhattan distance 2. The controller then chooses what to do using only that revealed information.
+The important rule is that the explorer never receives the hidden full map. It only gets the current revealed map, current position, previous actions, and remaining energy.
 
-## Exploration strategy
+## Energy safety
 
-The controller uses a simple frontier strategy. A frontier is a cell that is already known to be free and has at least one unknown neighbor. The controller moves through known-free cells to the nearest reachable frontier, then tries an unknown neighboring cell. This makes the behavior easy to explain and fully online.
+Let `d` be the shortest distance from the current position to the base using only cells that are already known to be free.
 
-## Energy safety: the important rule
+For an unknown-cell attempt, the explorer requires:
 
-Before exploring from the current position, the controller finds the shortest route back to base using only cells it already knows are free. Call that distance `d`.
+`remaining_energy >= d + 2`
 
-An exploratory move costs 1 energy. The destination might be an obstacle, in which case the position does not change, or it might be free, in which case the robot moves one cell farther away.
+Why? The move itself costs 1. If the unknown cell is free, the new position can be one step farther from the base, so up to `d + 1` more energy may be needed to return. The extra reserve also ensures the run can reach the base before energy becomes zero, allowing `DONE` on the next decision.
 
-To guarantee that exploration never strands the robot, the controller requires:
+For a move through a known-free cell, the explorer first calculates the return distance from that destination. It moves only when, after paying the move cost, enough energy remains to return to base with one unit left.
 
-```text
-remaining_energy >= d + 3
-```
+When exploration is no longer safe, the explorer immediately follows the known-free path back to base.
 
-The extra 3 has a clear meaning:
+## Output
 
-- 1 energy unit pays for the exploratory move.
-- Up to `d + 1` energy units are enough to return through the known route even when the unknown destination is free.
-- 1 additional energy unit is reserved so that, after reaching base, the run can still issue `DONE` before energy reaches zero.
+The script creates:
 
-When this condition is no longer true, the controller stops exploring and follows its known-free return path to base instead.
+- `logs/development_trajectory.csv` — every position, energy level, coverage value, action, and decision reason.
+- `logs/development_metrics.txt` — final development metrics.
+- `logs/exploration.png` — map, path, and base.
 
-For ordinary movement through already-known-free cells, the controller performs the same check after the proposed move: after spending 1 energy, enough must remain to return to base and still keep 1 unit available for `DONE`.
-
-## Coverage and CkEk
-
-The simulator computes true reachable free cells for evaluation, but the controller never sees that information.
-
-Coverage is:
-
-```text
-observed reachable free cells / total reachable free cells
-```
-
-The final score value is:
-
-```text
-CkEk = coverage * (remaining_energy / 400)
-```
-
-when the controller successfully returns to base and outputs `DONE`. Otherwise the remaining-energy fraction is defined as 0, so `CkEk = 0`.
-
-## Logged data
-
-The local runner stores:
-
-- `trajectory`: every position visited,
-- `coverage_over_time`: coverage after every action,
-- `energy_over_time`: remaining energy after every action,
-- `actions`: MOVE / ATTEMPT_OBSTACLE / DONE,
-- final coverage, return status, and CkEk.
-
-The matplotlib figure shows the generated evaluation grid, the path, and the base.
-
-## Files
-
-- `scout_grid.py` — complete ready-to-run simulator, online controller, metrics, and visualization.
-- `README.md` — simple explanation of the approach and safety rule.
+`CkEk = coverage * (remaining_energy / 400)` when the explorer returns successfully; otherwise the remaining-energy fraction is 0.
